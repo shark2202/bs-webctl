@@ -1,7 +1,14 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 build/
 dist/
 .venv/
-extension/*.zip
+
+# Build artifact — Chrome extension zip (regenerated, not source)
+bs_webctl/extension/*.zip
+
+# Tooling caches
+.code-analyzer-cache/
+.DS_Store

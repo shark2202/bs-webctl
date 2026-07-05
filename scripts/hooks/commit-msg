@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""bs-webctl commit-msg gate (Agent-SE-SPEC §4).
+
+Decisional-file commits must reference an accepted ADR. Mechanically this
+belongs in commit-msg (not pre-commit): pre-commit runs before the message
+exists; commit-msg receives the message file as $1 and can validate it.
+
+Status machine (Agent-SE §2.5):
+  accepted     → only state a commit may reference
+  proposed     → draft, not enforceable
+  superseded   → rejected, point at superseded_by
+  deprecated   → rejected, no successor
+"""
+import re, sys, subprocess
+from pathlib import Path
+
+# ponytail: decisional paths inline. Step 1 (index.md) should declare this list
+# as a 事实源清单 formally (Agent-SE §6); until then it lives here.
+DECISIONAL_TOP = {"adr", "prd", "design", "features"}
+DECISIONAL_FILES = {
+    "AGENTS.md", "OKF-SPEC.md", "Arcadia-SPEC.md", "Agent-SE-SPEC.md",
+    "pyproject.toml",
+}
+
+
+def fail(msg, hint=""):
+    print(f"[commit-msg] ✗ {msg}", file=sys.stderr)
+    if hint:
+        print(f"  see: {hint}", file=sys.stderr)
+    sys.exit(1)
+
+
+def staged_decisional():
+    out = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
+        text=True, errors="replace",
+    )
+    hits = []
+    for p in out.splitlines():
+        if not p:
+            continue
+        top = p.split("/", 1)[0]
+        if top in DECISIONAL_TOP or p in DECISIONAL_FILES:
+            hits.append(p)
+    return hits
+
+
+def adr_status(ref):
+    cands = list(Path("adr").glob(f"{ref}.md"))
+    if not cands:
+        return None, None
+    txt = cands[0].read_text(encoding="utf-8", errors="replace")
+    m = re.search(r'^status:\s*"?(\w+)"?', txt, re.M)
+    status = m.group(1) if m else ""
+    sb = re.search(r'^superseded_by:\s*"?([^"\s]+)"?', txt, re.M)
+    succ = sb.group(1) if sb else None
+    return status, succ
+
+
+def main():
+    msg = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+    hits = staged_decisional()
+    if not hits:
+        return  # non-decisional commit, no ADR ref required
+    # A reference is an explicit citation trailer (Refs:/Ref: line), not an
+    # incidental ADR-NNNN mention in the body. Per Nygard/MADR practice and
+    # the hook's own failure hint ('add Refs ADR-NNNN').
+    refs = []
+    for line in msg.splitlines():
+        if re.match(r"^\s*Refs?:?\s", line, re.I):
+            refs.extend(re.findall(r"ADR-\d+", line))
+    if not refs:
+        fail("commit touches decisional files but message has no 'Refs ADR-NNNN' trailer",
+             "Agent-SE-SPEC §4 — add a 'Refs: ADR-NNNN' footer line")
+    for ref in refs:
+        status, succ = adr_status(ref)
+        if status is None:
+            fail(f"message references {ref} but no such ADR in adr/")
+        if status == "superseded":
+            fail(f"message references {ref} which is superseded by {succ or '?'}",
+                 f"adr/{ref}.md — reference {succ} instead")
+        if status == "deprecated":
+            fail(f"message references {ref} which is deprecated (no successor)",
+                 f"adr/{ref}.md")
+        if status != "accepted":
+            fail(f"message references {ref} with status='{status}'; only 'accepted' is enforceable",
+                 f"adr/{ref}.md — proposed ADRs can't be referenced (Agent-SE §2.5)")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
